@@ -6,7 +6,9 @@ qdrant-client
 kafka-python
 fastapi
 uvicorn[standard]
+flask
 opencv-python-headless
 Pillow
 numpy
 httpx
+ultralytics

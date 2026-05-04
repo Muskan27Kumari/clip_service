@@ -14,6 +14,7 @@ Optional overrides:
 import argparse
 import json
 import logging
+import os
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -34,6 +35,19 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("retention")
+
+
+def _qdrant_client(qdrant_cfg: dict) -> QdrantClient:
+    kw = dict(
+        host=qdrant_cfg["host"],
+        port=int(qdrant_cfg["port"]),
+        https=bool(qdrant_cfg.get("https", False)),
+        check_compatibility=bool(qdrant_cfg.get("check_compatibility", False)),
+    )
+    key = qdrant_cfg.get("api_key") or os.environ.get("QDRANT_API_KEY")
+    if key:
+        kw["api_key"] = str(key).strip()
+    return QdrantClient(**kw)
 
 
 def delete_old_points(client: QdrantClient, collection: str, retention_days: int) -> int:
@@ -62,7 +76,7 @@ def run(config: dict, retention_days: int, interval_hours: int) -> None:
     qdrant_cfg = config["qdrant"]
     collection = qdrant_cfg.get("collection_name", "persons")
 
-    client = QdrantClient(host=qdrant_cfg["host"], port=qdrant_cfg["port"])
+    client = _qdrant_client(qdrant_cfg)
     logger.info(
         "Retention service started — collection='%s', retention=%d days, interval=%d h",
         collection, retention_days, interval_hours,

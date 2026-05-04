@@ -2,9 +2,12 @@ services:
   qdrant:
     image: qdrant/qdrant:latest
     restart: unless-stopped
-    network_mode: host
+    # Bind on 6335 so this stack does not fight another Qdrant on host :6333 (e.g. keyed instances).
+    ports:
+      - "127.0.0.1:6335:6333"
+    # Do not set QDRANT__SERVICE__API_KEY here — open local Qdrant. (Empty env can still enable auth.)
     volumes:
-      - qdrant_data:/qdrant/storage
+      - qdrant_data_clip:/qdrant/storage
 
   clip_service:
     build: .
@@ -44,5 +47,6 @@ services:
       - qdrant
 
 volumes:
-  qdrant_data:
-    name: qdrant_storage
+  # Fresh volume name so old qdrant_storage (with API key in DB) does not force 401.
+  qdrant_data_clip:
+    name: clip_service_qdrant_storage

@@ -20,6 +20,7 @@ import argparse
 import base64
 import json
 import logging
+import os
 import time
 import uuid
 from datetime import datetime, timezone
@@ -40,6 +41,19 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("clip_service")
+
+
+def _qdrant_client(qdrant_cfg: dict) -> QdrantClient:
+    kw = dict(
+        host=qdrant_cfg["host"],
+        port=int(qdrant_cfg["port"]),
+        https=bool(qdrant_cfg.get("https", False)),
+        check_compatibility=bool(qdrant_cfg.get("check_compatibility", False)),
+    )
+    key = qdrant_cfg.get("api_key") or os.environ.get("QDRANT_API_KEY")
+    if key:
+        kw["api_key"] = str(key).strip()
+    return QdrantClient(**kw)
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +211,7 @@ def run(config: dict) -> None:
     device  = "cuda" if torch.cuda.is_available() else "cpu"
     encoder = VisionEncoder(model_name, pretrained, device)
 
-    qdrant = QdrantClient(host=qdrant_cfg["host"], port=qdrant_cfg["port"])
+    qdrant = _qdrant_client(qdrant_cfg)
     ensure_collection(qdrant, collection, encoder.embed_dim)
 
     batch_size    = int(config.get("batch_size", 32))

@@ -289,6 +289,11 @@ let lastResults = [];
   try {
     const r = await fetch(`${API}/stats`);
     const d = await r.json();
+    if (!r.ok) {
+      const msg = typeof d.detail === 'string' ? d.detail : (d.detail ? JSON.stringify(d.detail) : r.status);
+      document.getElementById('stats').textContent = `Stats: ${msg}`;
+      return;
+    }
     document.getElementById('stats').textContent =
       `${d.vectors_count} persons indexed`;
   } catch(e) {
@@ -318,8 +323,16 @@ async function doSearch() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({query, top_k: topK, score_threshold: threshold})
     });
-    const results = await resp.json();
-    lastResults = results;
+    const body = await resp.json();
+    if (!resp.ok) {
+      const msg = typeof body.detail === 'string' ? body.detail : (body.detail ? JSON.stringify(body.detail) : resp.status);
+      document.getElementById('resultsInfo').textContent = msg;
+      lastResults = [];
+      document.getElementById('resultsGrid').innerHTML = '';
+      document.getElementById('emptyState').style.display = 'block';
+      return;
+    }
+    lastResults = body;
     lastQuery = query;
     applySortAndRender();
   } catch(e) {
@@ -414,11 +427,15 @@ async function viewSnapshot(index) {
   modalInfo.textContent = `${r.camera_name} | Tracker #${r.tracker_id} | ${new Date(r.timestamp).toLocaleString()}`;
 
   try {
-    const url = `${API}/snapshot?camera=${encodeURIComponent(r.camera_name)}&timestamp=${encodeURIComponent(r.timestamp)}&quality=85`;
+    const url = `${API}/snapshot?camera=${encodeURIComponent(r.camera_name)}&sensor_id=${encodeURIComponent(r.sensor_id || '')}&timestamp=${encodeURIComponent(r.timestamp)}&quality=85`;
     const resp = await fetch(url);
 
     if (!resp.ok) {
-      const errText = await resp.text();
+      let errText = await resp.text();
+      try {
+        const j = JSON.parse(errText);
+        if (j && typeof j.detail === 'string') errText = j.detail;
+      } catch (_) { /* plain text from upstream */ }
       throw new Error(errText || `HTTP ${resp.status}`);
     }
 
