@@ -1,4 +1,26 @@
 services:
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      # Single-node KRaft (no ZooKeeper)
+      - CLUSTER_ID=4L6g3nShT-eMCtK--X86sw
+      - KAFKA_NODE_ID=1
+      - KAFKA_PROCESS_ROLES=broker,controller
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@127.0.0.1:9093
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      - KAFKA_LISTENERS=PLAINTEXT://127.0.0.1:9092,CONTROLLER://127.0.0.1:9093
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://127.0.0.1:9092
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+    volumes:
+      - kafka_data_clip:/var/lib/kafka/data
+
   qdrant:
     image: qdrant/qdrant:latest
     restart: unless-stopped
@@ -17,10 +39,12 @@ services:
     network_mode: host
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      - HF_HUB_DISABLE_XET=1
     volumes:
       - ./config.json:/clip_service/config.json:ro
     command: python3 clip_service.py --config config.json
     depends_on:
+      - kafka
       - qdrant
 
   search_api:
@@ -30,9 +54,10 @@ services:
     network_mode: host
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      - HF_HUB_DISABLE_XET=1
     volumes:
       - ./config.json:/clip_service/config.json:ro
-    command: uvicorn search_api:app --host 0.0.0.0 --port 8000
+    command: uvicorn search_api:app --host 0.0.0.0 --port 8012
     depends_on:
       - clip_service
 
@@ -50,3 +75,5 @@ volumes:
   # Fresh volume name so old qdrant_storage (with API key in DB) does not force 401.
   qdrant_data_clip:
     name: clip_service_qdrant_storage
+  kafka_data_clip:
+    name: clip_service_kafka_storage

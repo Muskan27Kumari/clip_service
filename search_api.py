@@ -20,11 +20,12 @@ from typing import List, Optional
 
 import httpx
 import numpy as np
-# dummy imports
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+import open_clip
+import torch
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import UnexpectedResponse
@@ -83,6 +84,49 @@ def _qdrant_client_from_config(qdrant_cfg: dict) -> QdrantClient:
     return QdrantClient(**kwargs)
 
 
+def _qdrant_vector_dim(info) -> int | None:
+    """
+    Return collection vector dimension for both single-vector and named-vector collections.
+    """
+    vectors = info.config.params.vectors
+    if hasattr(vectors, "size"):
+        return int(vectors.size)
+    if isinstance(vectors, dict) and vectors:
+        first = next(iter(vectors.values()))
+        if hasattr(first, "size"):
+            return int(first.size)
+    return None
+
+
+class VisionEncoder:
+    def __init__(self, model_name: str, pretrained: str, device: str):
+        logger.info("Loading model '%s' (pretrained=%s) on %s", model_name, pretrained, device)
+        self.device = device
+        self.model, _, _ = open_clip.create_model_and_transforms(
+            model_name, pretrained=pretrained, device=device
+        )
+        self.tokenizer = open_clip.get_tokenizer(model_name)
+        self.model.eval()
+
+        img_size = getattr(self.model.visual, "image_size", None)
+        if isinstance(img_size, (tuple, list)):
+            h, w = img_size
+        else:
+            h = w = img_size or 224
+        with torch.no_grad():
+            dummy = torch.randn(1, 3, h, w).to(device)
+            self.embed_dim = int(self.model.encode_image(dummy).shape[1])
+
+        logger.info("Model ready — embedding dim=%d", self.embed_dim)
+
+    @torch.no_grad()
+    def encode_text(self, text: str) -> np.ndarray:
+        tokens = self.tokenizer([text]).to(self.device)
+        emb = self.model.encode_text(tokens)
+        emb = emb / emb.norm(dim=-1, keepdim=True)
+        return emb.cpu().float().numpy()[0]
+
+
 def _qdrant_error_http_exception(exc: Exception) -> HTTPException:
     if isinstance(exc, UnexpectedResponse) and exc.status_code == 401:
         return HTTPException(
@@ -135,33 +179,42 @@ async def lifespan(app: FastAPI):
     with config_path.open(encoding="utf-8") as f:
         config = json.load(f)
 
-    device = "cpu"
-    model = None
-    tokenizer = None
+    model_cfg = config.get("model", {})
+    model_name = model_cfg.get("name", "ViT-B-32")
+    pretrained = model_cfg.get("pretrained", "openai")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    encoder = VisionEncoder(model_name, pretrained, device)
 
     qdrant_cfg = config["qdrant"]
     qdrant = _qdrant_client_from_config(qdrant_cfg)
     collection_name = qdrant_cfg.get("collection_name", "persons")
 
-    query_vector_dim = 512
+    query_vector_dim = int(encoder.embed_dim)
     try:
         info = qdrant.get_collection(collection_name)
-        query_vector_dim = int(info.config.params.vectors.size)
+        dim = _qdrant_vector_dim(info)
+        if dim is not None:
+            query_vector_dim = int(dim)
         logger.info(
-            "Collection %r vector size=%d (dummy text embeddings will match this dim)",
+            "Collection %r vector size=%d",
             collection_name,
             query_vector_dim,
         )
+        if int(query_vector_dim) != int(encoder.embed_dim):
+            raise RuntimeError(
+                f"Model embed_dim={encoder.embed_dim} does not match Qdrant dim={query_vector_dim}. "
+                f"Fix config.model (or rebuild collection)."
+            )
     except Exception as e:
         logger.warning(
-            "Could not read collection %r (%s); using query vector dim %d until it exists.",
+            "Could not read collection %r (%s); using model embed dim %d until it exists.",
             collection_name,
             e,
             query_vector_dim,
         )
 
-    _state["model"]     = model
-    _state["tokenizer"] = tokenizer
+    _state["encoder"] = encoder
     _state["device"]    = device
     _state["qdrant"] = qdrant
     _state["collection_name"] = collection_name
@@ -193,13 +246,14 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 
 def _encode_text(text: str) -> List[float]:
-    """Placeholder embedding; dimension matches the Qdrant collection (see lifespan)."""
-    import numpy as np
-
-    dim = int(_state.get("query_vector_dim", 512))
-    vec = np.random.randn(dim).astype(np.float32)
-    vec = vec / (np.linalg.norm(vec) + 1e-12)
-    return vec.tolist()
+    """Encode text with the configured OpenCLIP model."""
+    encoder: VisionEncoder | None = _state.get("encoder")
+    if encoder is None:
+        dim = int(_state.get("query_vector_dim", 512))
+        vec = np.random.randn(dim).astype(np.float32)
+        vec = vec / (np.linalg.norm(vec) + 1e-12)
+        return vec.tolist()
+    return encoder.encode_text(text).tolist()
 
 
 # ---------------------------------------------------------------------------
